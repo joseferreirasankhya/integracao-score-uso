@@ -8,11 +8,17 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
 )
+
+// Sankhya rejects resourceIDs com caracteres que ele trata como metacaracteres
+// de escape/template (aspas simples, ${...}, <%...%>, etc.). Aplicado apenas
+// ao cubo "Mapeamento Telas - Novo AE", cujos IDs são identificadores técnicos.
+var validResourceID = regexp.MustCompile(`^[A-Za-z0-9._\-]+$`)
 
 const sankhyaBatchSize = 200
 
@@ -116,7 +122,17 @@ func postSankhyaBatch(url, token string, lote []any) {
 // the Mitra type, so each registry entry binds a concrete type at compile time.
 func runCube[T SankhyaConvertible](cube string) string {
 	items := getMitra[T](cube)
-	return postSankhya(cube, items)
+	filteredData := items[:0]
+
+	for _, it := range items {
+		if it.GetID() == "-999" {
+			continue
+		}
+
+		filteredData = append(filteredData, it)
+	}
+
+	return postSankhya(cube, filteredData)
 }
 
 // pipelines maps a cube name to its fully-typed pipeline. Adding a new cube is a
@@ -124,7 +140,29 @@ func runCube[T SankhyaConvertible](cube string) string {
 var pipelines = map[string]func(cube string) string{
 	"Processo":                   runCube[ProcessoMitra],
 	"Subprocesso":                runCube[SubprocessoMitra],
-	"Mapeamento Telas - Novo AE": runCube[MapeamentoTelasMitra],
+	"Mapeamento Telas - Novo AE": runMapeamentoTelas,
+}
+
+func runMapeamentoTelas(cube string) string {
+	items := getMitra[MapeamentoTelasMitra](cube)
+	filtered := items[:0]
+	skipped := 0
+	for _, it := range items {
+		id := it.GetID()
+		if id == "-999" {
+			continue
+		}
+		if !validResourceID.MatchString(id) {
+			skipped++
+			log.Printf("%s: ID inválido ignorado: %q", cube, id)
+			continue
+		}
+		filtered = append(filtered, it)
+	}
+	if skipped > 0 {
+		log.Printf("%s: %d registro(s) ignorado(s) por ID inválido", cube, skipped)
+	}
+	return postSankhya(cube, filtered)
 }
 
 func runPipeline(cube string) string {

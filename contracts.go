@@ -1,10 +1,5 @@
 package main
 
-import (
-	"log"
-	"strconv"
-)
-
 // === Response ===
 
 type Response[T any] struct {
@@ -42,50 +37,61 @@ type MapeamentoTelasMitra struct {
 // counterpart, instantiating that counterpart for sending.
 type SankhyaConvertible interface {
 	ToSankhya() any
+	GetID() string
 }
 
 func (p ProcessoMitra) ToSankhya() any {
-	return ProcessoSankhya{Descricao: p.Descricao}
+	return ProcessoSankhya{
+		ID:        p.ID,
+		Descricao: p.Descricao,
+	}
 }
 
 func (s SubprocessoMitra) ToSankhya() any {
 	return SubprocessoSankhya{
+		ID:           s.ID,
 		Descricao:    s.Descricao,
 		LinkPlanilha: s.LinkPlanilha,
 	}
 }
 
 func (m MapeamentoTelasMitra) ToSankhya() any {
-	idProcesso, err := strconv.ParseInt(m.IDProcesso, 10, 16)
-	if err != nil {
-		log.Fatalln("Erro ao converter o ID Processo em inteiro")
-	}
-
-	idSubprocesso, err := strconv.ParseInt(m.IDSubprocesso, 10, 16)
-	if err != nil {
-		log.Fatalln("Erro ao converter o ID Subprocesso em inteiro")
-	}
-
 	return MapeamentoTelasSankhya{
+		ID:               m.ID,
 		Descricao:        m.Descricao,
-		IDProcesso:       int16(idProcesso),
-		IDSubprocesso:    int16(idSubprocesso),
+		IDProcesso:       m.IDProcesso,
+		IDSubprocesso:    m.IDSubprocesso,
 		LinkAjudaSankhya: m.LinkAjudaSankhya,
 	}
 }
 
+func (p ProcessoMitra) GetID() string {
+	return p.ID
+}
+
+func (s SubprocessoMitra) GetID() string {
+	return s.ID
+}
+
+func (m MapeamentoTelasMitra) GetID() string {
+	return m.ID
+}
+
 type ProcessoSankhya struct {
+	ID        string `json:"ID"`
 	Descricao string `json:"Descrição"`
 }
 
 type SubprocessoSankhya struct {
+	ID           string `json:"ID"`
 	Descricao    string `json:"Descrição"`
 	LinkPlanilha string `json:"Link Planilha"`
 }
 
 type MapeamentoTelasSankhya struct {
+	ID               string `json:"ID"`
 	Descricao        string `json:"Descrição"`
-	IDProcesso       int16  `json:"ID Processo"`
-	IDSubprocesso    int16  `json:"ID Subprocesso"`
+	IDProcesso       string `json:"ID Processo"`
+	IDSubprocesso    string `json:"ID Subprocesso"`
 	LinkAjudaSankhya string `json:"Link Ajuda Sankhya"`
 }

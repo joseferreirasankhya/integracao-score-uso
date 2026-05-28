@@ -12,6 +12,7 @@ Capturar os dados de Score de Uso dos clientes de dentro do projeto Mitra para a
 - Golang
 - net/http
 - goroutines
+- [mpb](https://github.com/vbauerster/mpb) — barras de progresso concorrentes na CLI
 
 ## Estrutura do projeto
 
@@ -22,6 +23,7 @@ internal/integration/        Biblioteca com toda a lógica da integração
   config.go                  Config + carregamento/validação de variáveis de ambiente
   contracts.go               Contratos de dados Mitra/Sankhya e conversões
   integration.go             Requisições HTTP, pipelines, batching e orquestração
+  progress.go                Apresentação na CLI (header, barras ao vivo, resumo)
 tests/                       Testes caixa-preta (package integration_test)
   integration_test.go
 build/                       Binário compilado (gerado)
@@ -65,6 +67,17 @@ go vet ./...
 
 > O `.env` é carregado a partir do diretório de trabalho em runtime. Ao executar
 > o binário em `build/`, rode-o de onde o `.env` esteja acessível.
+
+## Saída na CLI
+
+A apresentação se adapta ao ambiente, decidida em runtime pela detecção de TTY:
+
+- **Terminal interativo:** painel com cabeçalho, uma barra de progresso por cubo
+  atualizando ao vivo (lotes concluídos / total) e um resumo final com contagem
+  de registros e tempo total. Cores discretas.
+- **Saída redirecionada (produção, CI, arquivo):** degrada automaticamente para
+  linhas de log limpas, sem ANSI nem redesenho — seguras para captura. Os ticks
+  por lote são silenciados; sobram o início/fim de cada cubo e o resumo.
 
 ## Pontos importantes
 - Esse projeto usa recursos multithreading para máxima performance em produção e diminuição de tempo de execução no GitHub Actions.

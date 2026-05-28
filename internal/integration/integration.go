@@ -6,12 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -149,10 +148,15 @@ type CubeResult struct {
 	Records   int
 	Batches   int
 	BatchSize int
+	Skipped   int // registros descartados pelo filtro keep (não pelo discardableID)
 }
 
 func (r CubeResult) String() string {
-	return fmt.Sprintf("Sankhya '%s': %d registro(s) salvo(s) em %d lote(s) de até %d", r.Cube, r.Records, r.Batches, r.BatchSize)
+	s := fmt.Sprintf("Sankhya '%s': %d registro(s) salvo(s) em %d lote(s) de até %d", r.Cube, r.Records, r.Batches, r.BatchSize)
+	if r.Skipped > 0 {
+		s += fmt.Sprintf(" (%d ignorado(s) por filtro)", r.Skipped)
+	}
+	return s
 }
 
 func PostSankhya[M SankhyaConvertible](cfg Config, cube string, items []M) (CubeResult, error) {
@@ -171,13 +175,14 @@ func PostSankhya[M SankhyaConvertible](cfg Config, cube string, items []M) (Cube
 		batches = append(batches, payload[start:end])
 	}
 
+	progress.total(cube, len(batches))
+
 	limiter := newRateLimiter(sankhyaRateLimit, sankhyaRateBurst)
 	defer limiter.close()
 
 	sem := make(chan struct{}, maxConcurrentBatches)
 	var wg sync.WaitGroup
 	errs := make([]error, len(batches))
-	var done atomic.Int64
 
 	for i, batch := range batches {
 		wg.Add(1)
@@ -191,7 +196,7 @@ func PostSankhya[M SankhyaConvertible](cfg Config, cube string, items []M) (Cube
 				errs[i] = fmt.Errorf("enviando lote %d do cubo %q: %w", i+1, cube, err)
 				return
 			}
-			log.Printf("%s: lote %d/%d concluído", cube, done.Add(1), len(batches))
+			progress.batchDone(cube)
 		}()
 	}
 	wg.Wait()
@@ -224,6 +229,8 @@ func postSankhyaBatch(cfg Config, url string, batch []any) error {
 // passam (além do descarte fixo do discardableID); passe nil para aceitar todos.
 func RunCube[T SankhyaConvertible](keep func(id string) bool) func(cfg Config, cube string) (CubeResult, error) {
 	return func(cfg Config, cube string) (CubeResult, error) {
+		progress.fetching(cube)
+
 		items, err := GetMitra[T](cfg, cube)
 		if err != nil {
 			return CubeResult{}, err
@@ -238,16 +245,14 @@ func RunCube[T SankhyaConvertible](keep func(id string) bool) func(cfg Config, c
 			}
 			if keep != nil && !keep(id) {
 				skipped++
-				log.Printf("%s: ID ignorado por filtro: %q", cube, id)
 				continue
 			}
 			filtered = append(filtered, it)
 		}
-		if skipped > 0 {
-			log.Printf("%s: %d registro(s) ignorado(s) por filtro", cube, skipped)
-		}
 
-		return PostSankhya(cfg, cube, filtered)
+		result, err := PostSankhya(cfg, cube, filtered)
+		result.Skipped = skipped
+		return result, err
 	}
 }
 
@@ -268,21 +273,40 @@ func RunPipeline(cfg Config, cube string) (CubeResult, error) {
 }
 
 // Run carrega a configuração e executa todas as pipelines registradas em
-// paralelo, imprimindo o resultado de cada uma. É o ponto de entrada que o
+// paralelo, renderizando o andamento de cada uma. É o ponto de entrada que o
 // main apenas dispara.
+//
+// A apresentação se adapta ao ambiente: num terminal interativo mostra um
+// painel com uma barra de progresso por cubo, atualizando ao vivo; com a saída
+// redirecionada (produção, CI, arquivo) degrada para linhas de log limpas, sem
+// ANSI nem redesenho.
 func Run() error {
+	u := newUI(os.Stdout)
+	u.header()
+
+	u.step("Carregando configuração")
 	cfg, err := LoadConfig()
 	if err != nil {
+		u.stepFail()
 		return fmt.Errorf("carregando configuração: %w", err)
 	}
+	u.stepOK()
 
 	// Fonte única dos cubos: as chaves do registro pipelines. Ordenamos para
-	// que a saída no log seja determinística, já que a execução é concorrente.
+	// que a apresentação seja determinística, já que a execução é concorrente.
 	cubes := make([]string, 0, len(pipelines))
 	for cube := range pipelines {
 		cubes = append(cubes, cube)
 	}
 	sort.Strings(cubes)
+
+	// Instala o sink de progresso conforme o ambiente. A partir daqui as
+	// pipelines reportam cada fase/lote através dele.
+	if u.tty {
+		progress = newMPBReporter(cubes, u.w, u.color)
+	} else {
+		progress = newPlainReporter(u.w)
+	}
 
 	start := time.Now()
 
@@ -292,24 +316,18 @@ func Run() error {
 
 	for i, cube := range cubes {
 		wg.Go(func() {
-			results[i], errs[i] = RunPipeline(cfg, cube)
+			result, err := RunPipeline(cfg, cube)
+			results[i], errs[i] = result, err
+			if err != nil {
+				progress.failed(cube, err)
+			} else {
+				progress.succeeded(cube, result)
+			}
 		})
 	}
 
 	wg.Wait()
+	progress.wait() // garante que as barras terminem de desenhar antes do resumo
 
-	for i, result := range results {
-		if errs[i] == nil {
-			fmt.Println(result)
-		}
-	}
-
-	if err := errors.Join(errs...); err != nil {
-		return fmt.Errorf("erros durante o processamento: %w", err)
-	}
-
-	elapsed := time.Since(start)
-	fmt.Println("Todos os processamentos concluídos com sucesso!")
-	fmt.Printf("Tempo total de execução: %.2fs\n", elapsed.Seconds())
-	return nil
+	return u.summary(cubes, results, errs, time.Since(start))
 }
